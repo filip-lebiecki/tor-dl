@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Torrent Downloader</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0f1117;--surface:#1a1d27;--surface2:#242836;--border:#2e3347;
+  --text:#e4e6f0;--text2:#8b8fa8;--accent:#6c8cff;--accent2:#4a6bff;
+  --green:#34d399;--yellow:#fbbf24;--red:#f87171;--orange:#fb923c;
+  --radius:10px;
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding:24px}
+.container{max-width:800px;margin:0 auto}
+h1{font-size:1.5rem;font-weight:700;margin-bottom:24px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+h1::before{content:'';display:inline-block;width:8px;height:8px;background:var(--accent);border-radius:50%}
+.header-stats{display:flex;gap:14px;margin-left:auto;font-size:.78rem;font-weight:500}
+.header-stats .stat{display:flex;align-items:center;gap:5px;color:var(--text2)}
+.header-stats .stat .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.header-stats .stat .dot.total{background:var(--text2)}
+.header-stats .stat .dot.active{background:var(--accent)}
+.header-stats .stat .dot.done{background:var(--green)}
+.input-row{display:flex;gap:10px;margin-bottom:28px}
+.input-row input{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;color:var(--text);font-size:0.95rem;outline:none;transition:border-color .2s}
+.input-row input:focus{border-color:var(--accent)}
+.input-row input::placeholder{color:var(--text2)}
+.input-row button{background:var(--accent);color:#fff;border:none;border-radius:var(--radius);padding:12px 28px;font-size:0.95rem;font-weight:600;cursor:pointer;transition:background .2s;white-space:nowrap}
+.input-row button:hover{background:var(--accent2)}
+.input-row button:active{transform:scale(.97)}
+.empty{text-align:center;color:var(--text2);padding:48px 0;font-size:0.95rem}
+.queue-item{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px;margin-bottom:12px;transition:border-color .2s}
+.queue-item.active{border-color:var(--accent)}
+.queue-header{display:flex;justify-content:space-between;align-items:start;gap:12px;margin-bottom:10px}
+.name{font-weight:600;font-size:0.95rem;word-break:break-all;flex:1;min-width:0}
+.badge{font-size:.7rem;font-weight:600;text-transform:uppercase;padding:3px 8px;border-radius:4px;white-space:nowrap;letter-spacing:.03em}
+.badge.waiting{background:#2e3347;color:var(--text2)}
+.badge.fetching{background:#2a2a1a;color:var(--yellow)}
+.badge.downloading{background:#1a2540;color:var(--accent)}
+.badge.complete{background:#0f2a1a;color:var(--green)}
+.badge.error{background:#2a0f0f;color:var(--red)}
+.progress-track{width:100%;height:6px;background:var(--surface2);border-radius:3px;overflow:hidden;margin-bottom:8px}
+.progress-fill{height:100%;border-radius:3px;transition:width .4s ease;background:var(--accent)}
+.progress-fill.complete{background:var(--green)}
+.stats{display:flex;gap:20px;font-size:.82rem;color:var(--text2);flex-wrap:wrap}
+.stats span{display:flex;align-items:center;gap:4px}
+.remove-btn{background:none;border:1px solid var(--border);color:var(--text2);border-radius:6px;padding:4px 10px;font-size:.78rem;cursor:pointer;transition:all .2s}
+.remove-btn:hover{border-color:var(--red);color:var(--red);background:rgba(248,113,113,.08)}
+.files{margin-top:10px;border-top:1px solid var(--border);padding-top:10px}
+.files-title{font-size:.8rem;color:var(--text2);margin-bottom:6px;font-weight:600}
+.file-link{display:block;font-size:.82rem;color:var(--accent);text-decoration:none;padding:2px 0}
+.file-link:hover{text-decoration:underline}
+.queue-item.removing{opacity:0;transform:translateX(30px);transition:all .3s ease}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Torrent Downloader <span class="header-stats"><span class="stat"><span class="dot total"></span><span id="st-total">0</span> total</span><span class="stat"><span class="dot active"></span><span id="st-active">0</span> active</span><span class="stat"><span class="dot done"></span><span id="st-done">0</span> done</span></span></h1>
+  <div class="input-row">
+    <input type="text" id="magnet" placeholder="Paste magnet link here..." autofocus>
+    <button onclick="addTorrent()">Add</button>
+  </div>
+  <div id="queue"></div>
+</div>
+<script>
+const $=s=>document.querySelector(s);
+const magnetInput=$('#magnet');
+magnetInput.addEventListener('keydown',e=>{if(e.key==='Enter')addTorrent()});
+
+function fmtBytes(b){
+  if(b===0)return'0 B';
+  const u=['B','KB','MB','GB','TB'];
+  const i=Math.floor(Math.log(b)/Math.log(1024));
+  return(b/Math.pow(1024,i)).toFixed(i>0?1:0)+' '+u[i];
+}
+
+function fmtSpeed(b){
+  if(b<=0)return'-- /s';
+  return fmtBytes(b)+'/s';
+}
+
+function stateLabel(s){
+  return{waiting:'Waiting',fetching:'Fetching Info',downloading:'Downloading',complete:'Complete',error:'Error'}[s]||s;
+}
+
+function renderQueue(items){
+  $('#st-total').textContent=items.length;
+  $('#st-active').textContent=items.filter(i=>i.state==='downloading'||i.state==='fetching').length;
+  $('#st-done').textContent=items.filter(i=>i.state==='complete').length;
+  const el=$('#queue');
+  if(!items.length){el.innerHTML='<div class="empty">No torrents in queue. Add a magnet link above.</div>';return}
+  el.innerHTML=items.map(item=>{
+    const pct=Math.min(item.progress,100).toFixed(1);
+    const isActive=item.state==='downloading'||item.state==='fetching';
+    const isDone=item.state==='complete';
+    const filesHtml=item.files&&item.files.length?`
+      <div class="files">
+        <div class="files-title">${item.files.length} file${item.files.length>1?'s':''}</div>
+        ${item.files.map(f=>`<a class="file-link" href="/downloads/${encodeURIComponent(item.name)}/${encodeURIComponent(f.path)}" target="_blank">${f.path} (${fmtBytes(f.size)})</a>`).join('')}
+      </div>`:'';
+    return `<div class="queue-item ${isActive?'active':''}" id="item-${item.id}">
+      <div class="queue-header">
+        <div class="name">${item.name||item.id}</div>
+        <span class="badge ${item.state}">${stateLabel(item.state)}</span>
+        <button class="remove-btn" onclick="removeTorrent('${item.id}','${item.state}')">Remove</button>
+      </div>
+      <div class="progress-track"><div class="progress-fill ${isDone?'complete':''}" style="width:${pct}%"></div></div>
+      <div class="stats">
+        <span>${pct}%</span>
+        <span>${fmtBytes(item.doneBytes)} / ${item.totalBytes?fmtBytes(item.totalBytes):'--'}</span>
+        ${item.speed?`<span>${fmtSpeed(item.speed)}</span>`:''}
+      </div>
+      ${isDone?filesHtml:''}
+    </div>`;
+  }).join('');
+}
+
+async function addTorrent(){
+  const magnet=magnetInput.value.trim();
+  if(!magnet)return;
+  magnetInput.value='';
+  try{
+    const res=await fetch('/api/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({magnet})});
+    if(!res.ok){const t=await res.text();alert('Error: '+t);return}
+    refresh();
+  }catch(e){alert('Error: '+e.message)}
+}
+
+async function removeTorrent(id,state){
+  const el=document.getElementById('item-'+id);
+  if(el){el.classList.add('removing');await new Promise(r=>setTimeout(r,300))}
+  try{
+    const res=await fetch('/api/remove/'+id,{method:'DELETE'});
+    if(!res.ok){alert('Error removing torrent');return}
+    refresh();
+  }catch(e){alert('Error: '+e.message)}
+}
+
+async function refresh(){
+  try{
+    const res=await fetch('/api/queue');
+    if(!res.ok)return;
+    const items=await res.json();
+    renderQueue(items);
+  }catch(e){}
+}
+
+setInterval(refresh,1000);
+refresh();
+</script>
+</body>
+</html>
