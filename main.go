@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io/fs"
 	"log"
@@ -48,6 +49,9 @@ type App struct {
 }
 
 func main() {
+	port := flag.Int("port", 8080, "port to listen on")
+	flag.Parse()
+
 	dataDir := filepath.Join(".", "downloads")
 	os.MkdirAll(dataDir, 0755)
 
@@ -76,9 +80,10 @@ func main() {
 	mux.Handle("/", http.FileServer(http.FS(staticSub)))
 	mux.Handle("/downloads/", http.StripPrefix("/downloads/", http.FileServer(http.Dir(app.dataDir))))
 
-	log.Println("Listening on http://localhost:8080")
+	addr := fmt.Sprintf(":%d", *port)
+	log.Printf("Listening on http://localhost:%d", *port)
 	log.Println("Downloads saved to:", dataDir)
-	log.Fatal(http.ListenAndServe(":8080", mux))
+	log.Fatal(http.ListenAndServe(addr, mux))
 }
 
 func (app *App) handleAdd(w http.ResponseWriter, r *http.Request) {

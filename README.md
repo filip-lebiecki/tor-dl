@@ -23,6 +23,22 @@ Open [http://localhost:8080](http://localhost:8080).
 
 Downloaded files are saved to `./downloads/`.
 
+## Options
+
+```
+./tor-dl [--port PORT]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--port` | `8080` | Port to listen on |
+
+Example:
+
+```bash
+./tor-dl --port 9090
+```
+
 ## API
 
 | Method | Path | Description |
