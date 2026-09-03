@@ -117,20 +117,21 @@ func (app *App) handleAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	app.mu.Lock()
+	resp := item.public()
+	app.mu.Unlock()
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(item.public())
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (app *App) handleQueue(w http.ResponseWriter, r *http.Request) {
 	app.mu.Lock()
-	items := make([]*QueueItem, len(app.queue))
-	copy(items, app.queue)
-	app.mu.Unlock()
-
-	result := make([]publicItem, len(items))
-	for i, item := range items {
+	result := make([]publicItem, len(app.queue))
+	for i, item := range app.queue {
 		result[i] = item.public()
 	}
+	app.mu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
@@ -309,6 +310,9 @@ func (app *App) setAutoRemove(id string, autoRemove bool) error {
 	for _, item := range app.queue {
 		if item.ID == id {
 			item.autoRemove = autoRemove
+			if autoRemove && item.State == "complete" {
+				item.completedAt = time.Now()
+			}
 			app.saveQueueLocked()
 			return nil
 		}
