@@ -22,10 +22,7 @@ h1::before{content:'';display:inline-block;width:8px;height:8px;background:var(-
 .header-stats .stat .dot.total{background:var(--text2)}
 .header-stats .stat .dot.active{background:var(--accent)}
 .header-stats .stat .dot.done{background:var(--green)}
-.input-row{display:flex;gap:10px;margin-bottom:12px}
-.options-row{display:flex;align-items:center;gap:8px;margin-bottom:28px;font-size:.85rem;color:var(--text2)}
-.options-row input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;cursor:pointer}
-.options-row label{cursor:pointer;user-select:none}
+.input-row{display:flex;gap:10px;margin-bottom:28px}
 .input-row input{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;color:var(--text);font-size:0.95rem;outline:none;transition:border-color .2s}
 .input-row input:focus{border-color:var(--accent)}
 .input-row input::placeholder{color:var(--text2)}
@@ -46,8 +43,10 @@ h1::before{content:'';display:inline-block;width:8px;height:8px;background:var(-
 .progress-track{width:100%;height:6px;background:var(--surface2);border-radius:3px;overflow:hidden;margin-bottom:8px}
 .progress-fill{height:100%;border-radius:3px;transition:width .4s ease;background:var(--accent)}
 .progress-fill.complete{background:var(--green)}
-.stats{display:flex;gap:20px;font-size:.82rem;color:var(--text2);flex-wrap:wrap}
+.stats{display:flex;gap:20px;font-size:.82rem;color:var(--text2);flex-wrap:wrap;align-items:center}
 .stats span{display:flex;align-items:center;gap:4px}
+.auto-toggle{display:flex;align-items:center;gap:5px;margin-left:auto;cursor:pointer;user-select:none}
+.auto-toggle input{accent-color:var(--accent);width:13px;height:13px;cursor:pointer}
 .remove-btn{background:none;border:1px solid var(--border);color:var(--text2);border-radius:6px;padding:4px 10px;font-size:.78rem;cursor:pointer;transition:all .2s}
 .remove-btn:hover{border-color:var(--red);color:var(--red);background:rgba(248,113,113,.08)}
 .files{margin-top:10px;border-top:1px solid var(--border);padding-top:10px}
@@ -63,10 +62,6 @@ h1::before{content:'';display:inline-block;width:8px;height:8px;background:var(-
   <div class="input-row">
     <input type="text" id="magnet" placeholder="Paste magnet link here..." autofocus>
     <button onclick="addTorrent()">Add</button>
-  </div>
-  <div class="options-row">
-    <input type="checkbox" id="autoRemove">
-    <label for="autoRemove">Auto-remove when complete</label>
   </div>
   <div id="queue"></div>
 </div>
@@ -117,6 +112,7 @@ function renderQueue(items){
         <span>${pct}%</span>
         <span>${fmtBytes(item.doneBytes)} / ${item.totalBytes?fmtBytes(item.totalBytes):'--'}</span>
         ${item.speed?`<span>${fmtSpeed(item.speed)}</span>`:''}
+        <label class="auto-toggle"><input type="checkbox" ${item.autoRemove?'checked':''} onchange="toggleAutoRemove('${item.id}',this.checked)">Auto-remove</label>
       </div>
       ${isDone?filesHtml:''}
     </div>`;
@@ -128,9 +124,16 @@ async function addTorrent(){
   if(!magnet)return;
   magnetInput.value='';
   try{
-    const autoRemove=$('#autoRemove').checked;
-    const res=await fetch('/api/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({magnet,autoRemove})});
+    const res=await fetch('/api/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({magnet})});
     if(!res.ok){const t=await res.text();alert('Error: '+t);return}
+    refresh();
+  }catch(e){alert('Error: '+e.message)}
+}
+
+async function toggleAutoRemove(id,autoRemove){
+  try{
+    const res=await fetch('/api/autoremove/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({autoRemove})});
+    if(!res.ok){alert('Error updating auto-remove');return}
     refresh();
   }catch(e){alert('Error: '+e.message)}
 }

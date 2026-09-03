@@ -86,6 +86,7 @@ func main() {
 	mux.HandleFunc("POST /api/add", app.handleAdd)
 	mux.HandleFunc("GET /api/queue", app.handleQueue)
 	mux.HandleFunc("DELETE /api/remove/{id}", app.handleRemove)
+	mux.HandleFunc("PUT /api/autoremove/{id}", app.handleSetAutoRemove)
 
 	staticSub, _ := fs.Sub(static, "static")
 	mux.Handle("/", http.FileServer(http.FS(staticSub)))
@@ -99,8 +100,7 @@ func main() {
 
 func (app *App) handleAdd(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Magnet     string `json:"magnet"`
-		AutoRemove bool   `json:"autoRemove"`
+		Magnet string `json:"magnet"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -111,7 +111,7 @@ func (app *App) handleAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	item, err := app.addMagnet(body.Magnet, body.AutoRemove)
+	item, err := app.addMagnet(body.Magnet)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -149,6 +149,28 @@ func (app *App) handleRemove(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (app *App) handleSetAutoRemove(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "id is required", http.StatusBadRequest)
+		return
+	}
+
+	var body struct {
+		AutoRemove bool `json:"autoRemove"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := app.setAutoRemove(id, body.AutoRemove); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 type publicItem struct {
 	ID         string     `json:"id"`
 	Name       string     `json:"name"`
@@ -160,6 +182,7 @@ type publicItem struct {
 	Speed      int64      `json:"speed"`
 	AddedAt    time.Time  `json:"addedAt"`
 	Files      []FileJSON `json:"files"`
+	AutoRemove bool       `json:"autoRemove"`
 }
 
 func (qi *QueueItem) public() publicItem {
@@ -174,11 +197,12 @@ func (qi *QueueItem) public() publicItem {
 		Speed:      qi.Speed,
 		AddedAt:    qi.AddedAt,
 		Files:      qi.Files,
+		AutoRemove: qi.autoRemove,
 	}
 }
 
-func (app *App) addMagnet(magnetURI string, autoRemove bool) (*QueueItem, error) {
-	return app.addMagnetAt(magnetURI, autoRemove, time.Now())
+func (app *App) addMagnet(magnetURI string) (*QueueItem, error) {
+	return app.addMagnetAt(magnetURI, false, time.Now())
 }
 
 func (app *App) addMagnetAt(magnetURI string, autoRemove bool, addedAt time.Time) (*QueueItem, error) {
@@ -194,8 +218,6 @@ func (app *App) addMagnetAt(magnetURI string, autoRemove bool, addedAt time.Time
 
 	for _, existing := range app.queue {
 		if existing.ID == id {
-			existing.autoRemove = autoRemove
-			app.saveQueueLocked()
 			return existing, nil
 		}
 	}
@@ -278,6 +300,20 @@ func (app *App) remove(id string) error {
 	}
 	app.saveQueueLocked()
 	return nil
+}
+
+func (app *App) setAutoRemove(id string, autoRemove bool) error {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+
+	for _, item := range app.queue {
+		if item.ID == id {
+			item.autoRemove = autoRemove
+			app.saveQueueLocked()
+			return nil
+		}
+	}
+	return fmt.Errorf("not found")
 }
 
 func (app *App) removeItemLocked(id string) (wasActive, ok bool) {
