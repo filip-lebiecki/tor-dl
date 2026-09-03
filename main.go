@@ -36,9 +36,19 @@ type QueueItem struct {
 	AddedAt    time.Time  `json:"addedAt"`
 	Files      []FileJSON `json:"files"`
 
-	t        *torrent.Torrent
-	prevRead int64
-	prevTime time.Time
+	t           *torrent.Torrent
+	autoRemove  bool
+	completedAt time.Time
+	prevRead    int64
+	prevTime    time.Time
+}
+
+const autoRemoveGracePeriod = 3 * time.Second
+
+type persistedItem struct {
+	MagnetURI  string    `json:"magnetURI"`
+	AutoRemove bool      `json:"autoRemove"`
+	AddedAt    time.Time `json:"addedAt"`
 }
 
 type App struct {
@@ -69,6 +79,7 @@ func main() {
 		dataDir: dataDir,
 	}
 
+	app.loadQueue()
 	go app.statsLoop()
 
 	mux := http.NewServeMux()
@@ -88,7 +99,8 @@ func main() {
 
 func (app *App) handleAdd(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Magnet string `json:"magnet"`
+		Magnet     string `json:"magnet"`
+		AutoRemove bool   `json:"autoRemove"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -99,7 +111,7 @@ func (app *App) handleAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	item, err := app.addMagnet(body.Magnet)
+	item, err := app.addMagnet(body.Magnet, body.AutoRemove)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -165,22 +177,39 @@ func (qi *QueueItem) public() publicItem {
 	}
 }
 
-func (app *App) addMagnet(magnetURI string) (*QueueItem, error) {
+func (app *App) addMagnet(magnetURI string, autoRemove bool) (*QueueItem, error) {
+	return app.addMagnetAt(magnetURI, autoRemove, time.Now())
+}
+
+func (app *App) addMagnetAt(magnetURI string, autoRemove bool, addedAt time.Time) (*QueueItem, error) {
 	t, err := app.client.AddMagnet(magnetURI)
 	if err != nil {
 		return nil, err
 	}
 
-	item := &QueueItem{
-		ID:        t.InfoHash().HexString(),
-		MagnetURI: magnetURI,
-		Name:      t.Name(),
-		State:     "waiting",
-		AddedAt:   time.Now(),
-		t:         t,
-	}
+	id := t.InfoHash().HexString()
 
 	app.mu.Lock()
+	defer app.mu.Unlock()
+
+	for _, existing := range app.queue {
+		if existing.ID == id {
+			existing.autoRemove = autoRemove
+			app.saveQueueLocked()
+			return existing, nil
+		}
+	}
+
+	item := &QueueItem{
+		ID:         id,
+		MagnetURI:  magnetURI,
+		Name:       t.Name(),
+		State:      "waiting",
+		AddedAt:    addedAt,
+		t:          t,
+		autoRemove: autoRemove,
+	}
+
 	app.queue = append(app.queue, item)
 
 	hasActive := false
@@ -194,7 +223,7 @@ func (app *App) addMagnet(magnetURI string) (*QueueItem, error) {
 	if !hasActive {
 		app.startItem(item)
 	}
-	app.mu.Unlock()
+	app.saveQueueLocked()
 
 	return item, nil
 }
@@ -240,20 +269,29 @@ func (app *App) remove(id string) error {
 	app.mu.Lock()
 	defer app.mu.Unlock()
 
+	wasActive, ok := app.removeItemLocked(id)
+	if !ok {
+		return fmt.Errorf("not found")
+	}
+	if wasActive {
+		app.startNextLocked()
+	}
+	app.saveQueueLocked()
+	return nil
+}
+
+func (app *App) removeItemLocked(id string) (wasActive, ok bool) {
 	for i, item := range app.queue {
 		if item.ID == id {
 			if item.t != nil {
 				item.t.Drop()
 			}
-			wasActive := item.State == "downloading" || item.State == "fetching"
+			wasActive = item.State == "downloading" || item.State == "fetching"
 			app.queue = append(app.queue[:i], app.queue[i+1:]...)
-			if wasActive {
-				app.startNextLocked()
-			}
-			return nil
+			return wasActive, true
 		}
 	}
-	return fmt.Errorf("not found")
+	return false, false
 }
 
 func (app *App) startNextLocked() {
@@ -278,6 +316,7 @@ func (app *App) updateStats() {
 	defer app.mu.Unlock()
 
 	now := time.Now()
+	var toRemove []string
 
 	for _, item := range app.queue {
 		if item.t == nil {
@@ -326,8 +365,70 @@ func (app *App) updateStats() {
 				item.Progress = 100
 				item.DoneBytes = item.TotalBytes
 				item.Speed = 0
+				item.completedAt = now
 				app.startNextLocked()
 			}
+		}
+
+		if item.State == "complete" && item.autoRemove && !item.completedAt.IsZero() &&
+			now.Sub(item.completedAt) >= autoRemoveGracePeriod {
+			toRemove = append(toRemove, item.ID)
+		}
+	}
+
+	if len(toRemove) > 0 {
+		for _, id := range toRemove {
+			app.removeItemLocked(id)
+		}
+		app.saveQueueLocked()
+	}
+}
+
+func (app *App) queueFilePath() string {
+	return filepath.Join(app.dataDir, ".queue.json")
+}
+
+func (app *App) saveQueueLocked() {
+	items := make([]persistedItem, 0, len(app.queue))
+	for _, item := range app.queue {
+		items = append(items, persistedItem{
+			MagnetURI:  item.MagnetURI,
+			AutoRemove: item.autoRemove,
+			AddedAt:    item.AddedAt,
+		})
+	}
+
+	data, err := json.MarshalIndent(items, "", "  ")
+	if err != nil {
+		log.Println("save queue:", err)
+		return
+	}
+
+	tmp := app.queueFilePath() + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		log.Println("save queue:", err)
+		return
+	}
+	if err := os.Rename(tmp, app.queueFilePath()); err != nil {
+		log.Println("save queue:", err)
+	}
+}
+
+func (app *App) loadQueue() {
+	data, err := os.ReadFile(app.queueFilePath())
+	if err != nil {
+		return
+	}
+
+	var items []persistedItem
+	if err := json.Unmarshal(data, &items); err != nil {
+		log.Println("load queue:", err)
+		return
+	}
+
+	for _, pi := range items {
+		if _, err := app.addMagnetAt(pi.MagnetURI, pi.AutoRemove, pi.AddedAt); err != nil {
+			log.Println("restore magnet:", err)
 		}
 	}
 }

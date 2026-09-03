@@ -22,7 +22,10 @@ h1::before{content:'';display:inline-block;width:8px;height:8px;background:var(-
 .header-stats .stat .dot.total{background:var(--text2)}
 .header-stats .stat .dot.active{background:var(--accent)}
 .header-stats .stat .dot.done{background:var(--green)}
-.input-row{display:flex;gap:10px;margin-bottom:28px}
+.input-row{display:flex;gap:10px;margin-bottom:12px}
+.options-row{display:flex;align-items:center;gap:8px;margin-bottom:28px;font-size:.85rem;color:var(--text2)}
+.options-row input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;cursor:pointer}
+.options-row label{cursor:pointer;user-select:none}
 .input-row input{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;color:var(--text);font-size:0.95rem;outline:none;transition:border-color .2s}
 .input-row input:focus{border-color:var(--accent)}
 .input-row input::placeholder{color:var(--text2)}
@@ -60,6 +63,10 @@ h1::before{content:'';display:inline-block;width:8px;height:8px;background:var(-
   <div class="input-row">
     <input type="text" id="magnet" placeholder="Paste magnet link here..." autofocus>
     <button onclick="addTorrent()">Add</button>
+  </div>
+  <div class="options-row">
+    <input type="checkbox" id="autoRemove">
+    <label for="autoRemove">Auto-remove when complete</label>
   </div>
   <div id="queue"></div>
 </div>
@@ -121,7 +128,8 @@ async function addTorrent(){
   if(!magnet)return;
   magnetInput.value='';
   try{
-    const res=await fetch('/api/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({magnet})});
+    const autoRemove=$('#autoRemove').checked;
+    const res=await fetch('/api/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({magnet,autoRemove})});
     if(!res.ok){const t=await res.text();alert('Error: '+t);return}
     refresh();
   }catch(e){alert('Error: '+e.message)}
